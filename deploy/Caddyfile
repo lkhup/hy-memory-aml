@@ -1,0 +1,21 @@
+{
+    email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+    encode zstd gzip
+
+    header {
+        -Server
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+    }
+
+    reverse_proxy aml-api:8000 {
+        transport http {
+            dial_timeout 10s
+            response_header_timeout 30m
+        }
+    }
+}
+
