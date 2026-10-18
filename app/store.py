@@ -7,7 +7,7 @@ import re
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -29,8 +29,12 @@ def payload_digest(request: AddRequest) -> str:
 
 def _iso_timestamp(timestamp_ms: int | None) -> str:
     if timestamp_ms is None:
-        return datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    return datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC).isoformat().replace("+00:00", "Z")
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 class AdapterStore:

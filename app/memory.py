@@ -4,7 +4,7 @@ import hashlib
 import logging
 import threading
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from app.config import Settings
@@ -40,7 +40,11 @@ def _to_iso(value: Any) -> str | None:
     if isinstance(value, (int, float)):
         seconds = value / 1000 if value > 10_000_000_000 else value
         try:
-            return datetime.fromtimestamp(seconds, tz=UTC).isoformat().replace("+00:00", "Z")
+            return (
+                datetime.fromtimestamp(seconds, tz=timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
         except (OSError, OverflowError, ValueError):
             return None
     return None
@@ -137,9 +141,9 @@ class MemoryService:
         if timestamps:
             # Hy-Memory currently accepts one datetime for a batch. Keep it as naive UTC,
             # matching the SDK's internal datetime representation.
-            memory_at = datetime.fromtimestamp(max(timestamps) / 1000, tz=UTC).replace(
-                tzinfo=None
-            )
+            memory_at = datetime.fromtimestamp(
+                max(timestamps) / 1000, tz=timezone.utc
+            ).replace(tzinfo=None)
         with self._add_slots, self._user_lock(request.user_id):
             result = self.client.add(
                 messages,

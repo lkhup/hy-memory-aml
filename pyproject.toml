@@ -7,7 +7,7 @@ name = "hy-memory-aml"
 version = "0.1.0"
 description = "AML Cycle 2 Add/Search adapter for Tencent Hy-Memory 2.0"
 readme = "README.md"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.10,<3.14"
 license = { text = "Apache-2.0" }
 dependencies = [
   "fastapi==0.116.1",
@@ -32,7 +32,7 @@ addopts = "-q"
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py310"
 extend-exclude = [".venv", ".uv-cache", ".uv-python", "data"]
 
 [tool.ruff.lint]

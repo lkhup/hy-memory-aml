@@ -46,7 +46,7 @@ Always re-check the current official documents before a formal run:
 
 Requirements:
 
-- Python 3.11–3.13
+- Python 3.10–3.13
 - [`uv`](https://docs.astral.sh/uv/)
 - valid OpenAI-compatible LLM and embedding credentials for real Hy-Memory calls
 
