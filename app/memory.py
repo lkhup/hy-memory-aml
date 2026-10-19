@@ -132,7 +132,7 @@ class MemoryService:
 
     def _user_lock(self, user_id: str) -> threading.RLock:
         digest = hashlib.blake2b(user_id.encode("utf-8"), digest_size=2).digest()
-        return self._stripes[int.from_bytes(digest) % len(self._stripes)]
+        return self._stripes[int.from_bytes(digest, byteorder="big") % len(self._stripes)]
 
     def add(self, request: AddRequest) -> None:
         messages = [message.model_dump(exclude_none=True) for message in request.messages]
