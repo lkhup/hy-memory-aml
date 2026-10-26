@@ -2,11 +2,13 @@
 
 import asyncio
 import logging
+import os
 import random
 import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
+from pathlib import Path
 
 import httpx
 
@@ -14,6 +16,22 @@ from multitrack.config import TrackSettings
 
 logger = logging.getLogger(__name__)
 TRANSIENT = {408, 425, 429, 500, 502, 503, 504, 524}
+
+
+def owner_alive(pid):
+    if os.name != "posix":
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    stat = Path(f"/proc/{pid}/stat")
+    try:
+        return not stat.exists() or stat.read_text().split()[2] != "Z"
+    except FileNotFoundError:
+        return False
 
 
 class Budget:
@@ -27,9 +45,16 @@ class Budget:
                     name TEXT PRIMARY KEY, ceiling INTEGER, target INTEGER,
                     cooldown REAL DEFAULT 0, adjusted REAL DEFAULT 0,
                     ok INTEGER DEFAULT 0, errors INTEGER DEFAULT 0, peak INTEGER DEFAULT 0);
-                CREATE TABLE IF NOT EXISTS leases (id TEXT PRIMARY KEY, lane TEXT, expiry REAL);
+                CREATE TABLE IF NOT EXISTS leases (
+                    id TEXT PRIMARY KEY, lane TEXT, expiry REAL, owner INTEGER DEFAULT 0);
                 CREATE INDEX IF NOT EXISTS lease_lane ON leases(lane, expiry);
             """)
+            if "owner" not in {row[1] for row in db.execute("PRAGMA table_info(leases)")}:
+                try:
+                    db.execute("ALTER TABLE leases ADD COLUMN owner INTEGER DEFAULT 0")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
             for name, ceiling, initial in (
                 ("llm", settings.provider_max_concurrency, settings.provider_initial_concurrency),
                 (
@@ -56,6 +81,10 @@ class Budget:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute("DELETE FROM leases WHERE expiry < ?", (now,))
+            owners = [r[0] for r in db.execute("SELECT DISTINCT owner FROM leases WHERE owner>0")]
+            for pid in owners:
+                if not owner_alive(pid):
+                    db.execute("DELETE FROM leases WHERE owner=?", (pid,))
             target, cooldown = db.execute(
                 "SELECT target,cooldown FROM lanes WHERE name=?", (lane,)
             ).fetchone()
@@ -64,7 +93,10 @@ class Budget:
                 db.rollback()
                 return None
             token = uuid.uuid4().hex
-            db.execute("INSERT INTO leases VALUES(?,?,?)", (token, lane, now + 600))
+            db.execute(
+                "INSERT INTO leases(id,lane,expiry,owner) VALUES(?,?,?,?)",
+                (token, lane, now + 600, os.getpid()),
+            )
             db.execute("UPDATE lanes SET peak=max(peak,?) WHERE name=?", (active + 1, lane))
             db.commit()
             return token

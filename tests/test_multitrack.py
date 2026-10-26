@@ -203,6 +203,21 @@ def test_shared_budget_bounds_two_process_equivalents(tmp_path):
     assert first.snapshot()["llm"]["peak"] == 3
 
 
+def test_crashed_owner_does_not_hold_provider_slots_until_expiry(tmp_path, monkeypatch):
+    import multitrack.provider as provider
+
+    config = settings(tmp_path, provider_max_concurrency=1, provider_initial_concurrency=1)
+    budget = Budget(config)
+    token = budget.try_acquire("llm")
+    assert token
+    with budget.connect() as db:
+        db.execute("UPDATE leases SET owner=99999999 WHERE id=?", (token,))
+    monkeypatch.setattr(provider, "owner_alive", lambda pid: pid != 99999999)
+    replacement = budget.try_acquire("llm")
+    assert replacement and replacement != token
+    budget.finish(replacement, "llm", 200)
+
+
 def test_provider_recovers_from_502_without_losing_successful_peers(tmp_path, monkeypatch):
     import multitrack.provider as provider
 

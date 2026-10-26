@@ -62,6 +62,10 @@ not counted in the new-services budget. The shared limit is a hard bound for the
 two new backends, not for the unchanged legacy process. Raising HTTP admission
 does not increase a provider's quota.
 
+On Linux, leases belonging to exited or zombie worker processes are reclaimed on
+the next budget acquisition; expiry remains a fallback. This prevents a restarted
+backend waiting for the ten-minute lease expiry after an abrupt process exit.
+
 Authenticated `/coding/metrics` and `/multimodal/metrics` expose active/queued/
 completed/rejected counts and observed provider concurrency, without payloads or
 credentials. Server logs and synthetic load reports stay out of Git.
