@@ -22,7 +22,22 @@ class MemoryClient(Protocol):
     def close(self) -> None: ...
 
 
+class FastMemoryClient(Protocol):
+    def add(self, request: AddRequest) -> None: ...
+
+    def search(self, request: SearchRequest, query: str) -> list[MemoryRecord]: ...
+
+    def close(self) -> None: ...
+
+
 def create_hy_memory_client(settings: Settings) -> MemoryClient:
+    from dotenv import load_dotenv
+
+    from app.hy_transport import install_shared_pool_fix
+
+    # Settings reads .env for the adapter; Hy-Memory reads os.environ directly.
+    load_dotenv(".env", override=False)
+    install_shared_pool_fix()
     from hy_memory import HyMemoryClient
 
     return HyMemoryClient(mode=settings.memory_mode)
@@ -121,11 +136,25 @@ class MemoryService:
         settings: Settings,
         store: AdapterStore,
         client: MemoryClient | None = None,
+        fast_memory: FastMemoryClient | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
-        self.client = client or create_hy_memory_client(settings)
-        self._stripes = [threading.RLock() for _ in range(64)]
+        if fast_memory is not None:
+            self.fast_memory = fast_memory
+        elif settings.fast_memory_enabled or settings.fast_memory_read_fallback:
+            from app.fast_memory import FastVectorMemory
+
+            self.fast_memory = FastVectorMemory(settings)
+        else:
+            self.fast_memory = None
+        self.client = client
+        if self.client is None and not settings.fast_memory_enabled and fast_memory is None:
+            self.client = create_hy_memory_client(settings)
+        # Keep writes for one user ordered without making unrelated users
+        # contend on the same lock too often. These are deliberately striped
+        # rather than stored in an unbounded per-user dictionary.
+        self._stripes = [threading.RLock() for _ in range(1024)]
         self._add_slots = threading.BoundedSemaphore(settings.max_add_concurrency)
         self._search_slots = threading.BoundedSemaphore(settings.max_search_concurrency)
         self.ready = True
@@ -135,6 +164,11 @@ class MemoryService:
         return self._stripes[int.from_bytes(digest, byteorder="big") % len(self._stripes)]
 
     def add(self, request: AddRequest) -> None:
+        if self.settings.fast_memory_enabled and self.fast_memory is not None:
+            with self._add_slots:
+                self.fast_memory.add(request)
+            return
+
         messages = [message.model_dump(exclude_none=True) for message in request.messages]
         timestamps = [message.timestamp for message in request.messages if message.timestamp]
         memory_at = None
@@ -144,7 +178,12 @@ class MemoryService:
             memory_at = datetime.fromtimestamp(
                 max(timestamps) / 1000, tz=timezone.utc
             ).replace(tzinfo=None)
-        with self._add_slots, self._user_lock(request.user_id):
+        # Acquire the user lock first. Otherwise, multiple queued writes for
+        # one user can occupy every global slot while only one does useful
+        # work, starving writes for other users.
+        with self._user_lock(request.user_id), self._add_slots:
+            if self.client is None:
+                raise RuntimeError("Hy-Memory client is not initialized")
             result = self.client.add(
                 messages,
                 user_id=request.user_id,
@@ -166,26 +205,40 @@ class MemoryService:
         raw_limit = min(self.settings.raw_evidence_limit, request.top_k)
         semantic_limit = request.top_k
 
-        with self._search_slots, self._user_lock(request.user_id):
-            result = self.client.search(
-                query=query,
-                user_ids=[request.user_id],
-                agent_ids=["aml-textual"],
-                limit=semantic_limit,
-                schema_limit=min(10, semantic_limit),
-                intention_limit=min(5, semantic_limit),
-                search_mode="default",
-            )
-            if not isinstance(result, Mapping):
-                raise RuntimeError("Hy-Memory returned an invalid Search response")
-            semantic = flatten_hy_memory_result(result)
+        # Searches are read-only. Serializing them with the per-user write lock
+        # made all questions for the same benchmark conversation run one at a
+        # time, regardless of MAX_SEARCH_CONCURRENCY.
+        with self._search_slots:
+            if self.settings.fast_memory_enabled and self.fast_memory is not None:
+                semantic = self.fast_memory.search(request, query)
+            else:
+                if self.client is None:
+                    raise RuntimeError("Hy-Memory client is not initialized")
+                result = self.client.search(
+                    query=query,
+                    user_ids=[request.user_id],
+                    agent_ids=["aml-textual"],
+                    limit=semantic_limit,
+                    schema_limit=min(10, semantic_limit),
+                    intention_limit=min(5, semantic_limit),
+                    search_mode="default",
+                )
+                if not isinstance(result, Mapping):
+                    raise RuntimeError("Hy-Memory returned an invalid Search response")
+                semantic = flatten_hy_memory_result(result)
+                if self.settings.fast_memory_read_fallback and self.fast_memory is not None:
+                    # Historical fast-mode evidence remains accessible. New writes
+                    # must still finish the full synchronous Hy-Memory pipeline.
+                    fallback = self.fast_memory.search(request, query)
+                    semantic = merge_records(semantic, fallback, request.top_k)
             raw = self.store.search_raw(request.user_id, query, raw_limit)
             return merge_records(semantic, raw, request.top_k)
 
     def close(self) -> None:
         self.ready = False
-        close = getattr(self.client, "close", None)
-        if callable(close):
-            close()
+        for backend in (self.fast_memory, self.client):
+            close = getattr(backend, "close", None)
+            if callable(close):
+                close()
 
 

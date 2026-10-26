@@ -36,6 +36,19 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> Iterator[None]:
         service = MemoryService(settings=settings, store=store, client=memory_client)
+        if service.fast_memory is not None and settings.fast_memory_backfill_hours > 0:
+            try:
+                documents = store.recent_raw_documents(settings.fast_memory_backfill_hours)
+                backfill = getattr(service.fast_memory, "backfill", None)
+                if callable(backfill):
+                    added = backfill(documents)
+                    logger.info(
+                        "Fast memory backfill complete: candidates=%d added=%d",
+                        len(documents),
+                        added,
+                    )
+            except Exception:
+                logger.exception("Fast memory backfill failed; continuing without it")
         app.state.memory_service = service
         try:
             yield

@@ -10,11 +10,11 @@ It never generates the benchmark's final answer.
 
 ```text
 AML evaluator
-    │ HTTPS + Memory System Key
+    │ HTTP + Memory System Key
     ▼
-Caddy ──► FastAPI adapter ──► Hy-Memory 2.0.3 ──► Qdrant
-                         ├──► Add-stage LLM API
-                         └──► Embedding API
+Uvicorn ──► FastAPI adapter ──► Hy-Memory 2.0.3 ──► Chroma
+                           ├──► Add-stage LLM API
+                           └──► Embedding API
 ```
 
 The adapter provides:
@@ -25,8 +25,8 @@ The adapter provides:
 - Bearer, Token, and `X-Api-Key` authentication;
 - conversion of Hy-Memory's retrieval channels to AML memory records;
 - a durable verbatim-evidence fallback for exact facts and auditability;
-- persistent Qdrant and adapter volumes;
-- automatic HTTPS through Caddy.
+- persistent Chroma, Hy-Memory, and adapter SQLite data;
+- a single Uvicorn worker with bounded Add/Search concurrency.
 
 ## Competition compliance
 
@@ -66,8 +66,9 @@ cp .env.example .env
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-The Compose deployment overrides the vector-store settings to use Qdrant. For a
-non-Compose local run, remove or adjust the Qdrant variables in `.env`.
+The submitted deployment uses Chroma, matching `.env.example`. Docker/Compose
+files are retained as an optional deployment variant, but were not used for the
+Cycle 2 Full run described here.
 
 ## Server deployment
 
@@ -76,9 +77,8 @@ Recommended baseline when LLM and embedding inference use remote APIs:
 - Ubuntu 22.04 or 24.04;
 - 8 vCPU, 16 GiB RAM minimum (32 GiB preferred);
 - 100 GiB SSD;
-- Docker Engine with the Compose plugin;
-- a domain whose A/AAAA record points to the server;
-- inbound TCP 80 and TCP/UDP 443 allowed.
+- Python 3.10 with the `venv` module or another isolated environment;
+- an inbound TCP port dedicated to the API.
 
 ### 1. Prepare configuration
 
@@ -88,28 +88,29 @@ cd hy-memory-aml
 cp .env.example .env
 ```
 
-Generate two different secrets:
+Generate a dedicated API authentication secret:
 
 ```bash
 openssl rand -hex 32
-openssl rand -hex 32
 ```
 
-Put one in `API_TOKEN` and the other in `QDRANT_API_KEY`. Set `DOMAIN`,
-`ACME_EMAIL`, and the LLM/embedding credentials. Never commit `.env`.
+Put it in `API_TOKEN`, then configure the LLM and embedding credentials.
+Never commit `.env`.
 
-### 2. Start the stack
+### 2. Create the environment and start the service
 
 ```bash
-docker compose pull
-docker compose build --pull
-docker compose up -d
-docker compose ps
-docker compose logs -f aml-api
+python3 -m venv .venv-deploy
+.venv-deploy/bin/pip install -e .
+mkdir -p logs
+nohup .venv-deploy/bin/python -m uvicorn app.main:app \
+  --host 0.0.0.0 --port 18793 --workers 1 \
+  >> logs/app.log 2>&1 < /dev/null &
+echo $! > app.pid
 ```
 
-Qdrant is reachable only on the internal Compose network. Caddy is the only public
-service and obtains/renews the TLS certificate automatically.
+Use the host firewall or provider security group to expose only the intended API
+port. Put a reverse proxy in front only when TLS or a domain is required.
 
 ### 3. Verify the deployed API
 
@@ -130,21 +131,21 @@ Also test all AML properties before submission:
 - the same `request_id` and payload returns success without a second Hy-Memory write;
 - the same `request_id` with a changed payload returns HTTP 409;
 - a different `user_id` cannot retrieve the first user's evidence;
-- container and server restarts preserve all data;
+- process and server restarts preserve all data;
 - the service sustains the Add/Search concurrency declared in the AML request;
 - `/search` returns evidence, never a final answer.
 
 ### 4. Back up persistent data
 
-The deployment uses named volumes `hy-memory-aml_aml_data` and
-`hy-memory-aml_qdrant_data`. Configure provider-level volume snapshots before the
-Full run. Do not remove the volumes while an evaluation is active.
+Back up the configured `MEMORY_DATA_DIR`, `MEMORY_PERSIST_DIR`, `DATA_DIR`, and
+fast-memory fallback directory. Do not replace or remove them while an evaluation
+is active.
 
 ### 5. Upgrade safely
 
-Freeze the commit and image used for the formal evaluation. Do not deploy code or
-configuration changes during a Full run. Before an upgrade, snapshot both volumes,
-build a new versioned image, run smoke against a staging instance, and then switch.
+Freeze the commit used for the formal evaluation. Do not deploy code or configuration
+changes during a Full run. Before an upgrade, snapshot all persistent directories,
+run smoke against a separate staging instance, and then switch.
 
 ## API examples
 
@@ -184,14 +185,45 @@ curl -X POST https://memory.example.com/search \
 
 - `MEMORY_MODE=pro` enables Hy-Memory extraction and reconciliation without the
   operational cost of the full Ultra graph pipeline.
-- `HY_MEMORY_READER=hybrid` lets Qdrant contribute keyword/BM25 candidates.
+- `HY_MEMORY_READER=hybrid` combines Hy-Memory retrieval channels over Chroma.
 - `MEMORY_EMBEDDING_DIMS` must exactly match the embedding model's output.
 - `RAW_EVIDENCE_LIMIT` controls how many relevant source messages may supplement
   Hy-Memory's semantic results.
 - `INCLUDE_OPTIONS_IN_QUERY` defaults to `false`; enable it only after evaluating
   whether multiple-choice option text improves retrieval without adding noise.
-- Run one API worker. The adapter handles bounded concurrency within that process
-  and uses per-user locks so Search cannot observe a partially completed Add.
+- Run one API worker. The adapter handles bounded concurrency within that process.
+  Writes for one user are serialized; independent users can write concurrently.
+  Searches do not take the write lock: wait for Add to succeed before querying
+  data from that write.
+
+### LLM concurrency fix (2026-10-21)
+
+`app/hy_transport.py` installs a version-guarded compatibility patch for the
+installed Hy-Memory 2.0.3 LLM transport. A failing request must not close the
+cached HTTP client while other requests are still using it. The patch keeps
+the shared pool alive until shutdown, preserving prompts, tools, extraction,
+reconciliation, and the existing outer retry policy.
+
+The deployed configuration uses `MAX_ADD_CONCURRENCY=16`,
+`MAX_SEARCH_CONCURRENCY=16`, `MEMORY_LLM_GLOBAL_CONCURRENCY=16`,
+`MEMORY_MODE=pro`, and `FAST_MEMORY_ENABLED=false`. All new writes finish
+the synchronous Hy-Memory pipeline before acknowledgement. The transitional
+`FAST_MEMORY_READ_FALLBACK=true` reads previously indexed fast-mode records;
+it does not convert those historical records into LLM-extracted memories.
+
+An isolated synthetic benchmark (16 distinct users, same messages, raw-evidence
+fallback disabled) took 68.645 seconds with concurrency 2 and 28.856 seconds
+with concurrency 16: about 2.38x batch throughput. Both returned 16/16 successful
+writes and 16/16 semantic hits. A second 16-way run also completed 16 initial
+writes, 16 subsequent updates, and 16 searches finding the updated fact.
+This is a small smoke/performance test, not an official Full result or a score
+guarantee. Provider 429/502 responses can still require retries. A single user's
+writes remain serialized to protect memory consistency.
+
+Reproduce on isolated storage using `scripts/bench_hy_llm.py --env-file .env
+--concurrency 16 --count 16 --rounds 2`. It consumes API quota and retains
+synthetic test artifacts under a new `hy-pro-bench-*` directory. Never change
+the implementation mid-run and treat that mixed run as a clean version comparison.
 
 ## Known operational boundary
 

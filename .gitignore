@@ -1,12 +1,22 @@
 .env
-.venv/
+.env.*
+!.env.example
+.venv*/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
 .uv-cache/
 .uv-python/
+.tmp-tests/
 *.py[cod]
+*.pid
+*.log
+*.before-*
 data/
+logs/
+deploy-backup-*/
+staging-*/
+hy-pro-bench-*/
 htmlcov/
 .coverage
 

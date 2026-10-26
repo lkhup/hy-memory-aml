@@ -21,6 +21,15 @@ class Reservation:
     state: Literal["new", "cached", "busy", "conflict"]
 
 
+@dataclass(frozen=True)
+class RawDocument:
+    request_id: str
+    user_id: str
+    session_id: str
+    content: str
+    created_at: str
+
+
 def payload_digest(request: AddRequest) -> str:
     payload = request.model_dump(mode="json")
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -169,6 +178,62 @@ class AdapterStore:
                 "UPDATE add_requests SET state = 'failed', updated_at = ? WHERE request_id = ?",
                 (time.time(), request_id),
             )
+
+    def recent_raw_documents(self, hours: float) -> list[RawDocument]:
+        if hours <= 0:
+            return []
+        cutoff = time.time() - hours * 3600
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT r.request_id, r.user_id, r.session_id, r.role, r.content,
+                       r.created_at, r.ordinal
+                FROM raw_evidence AS r
+                JOIN add_requests AS a ON a.request_id = r.request_id
+                WHERE a.state = 'succeeded' AND a.updated_at >= ?
+                ORDER BY r.request_id, r.ordinal
+                """,
+                (cutoff,),
+            ).fetchall()
+
+        documents: list[RawDocument] = []
+        current_request_id: str | None = None
+        current_user_id = ""
+        current_session_id = ""
+        current_created_at = ""
+        parts: list[str] = []
+        for row in rows:
+            request_id = row["request_id"]
+            if request_id != current_request_id:
+                if current_request_id is not None:
+                    documents.append(
+                        RawDocument(
+                            request_id=current_request_id,
+                            user_id=current_user_id,
+                            session_id=current_session_id,
+                            content="\n".join(parts),
+                            created_at=current_created_at,
+                        )
+                    )
+                parts = []
+                current_request_id = request_id
+                current_user_id = row["user_id"]
+                current_session_id = row["session_id"]
+                current_created_at = row["created_at"]
+            else:
+                current_created_at = max(current_created_at, row["created_at"])
+            parts.append(f"{row['role']}: {row['content']}")
+        if current_request_id is not None:
+            documents.append(
+                RawDocument(
+                    request_id=current_request_id,
+                    user_id=current_user_id,
+                    session_id=current_session_id,
+                    content="\n".join(parts),
+                    created_at=current_created_at,
+                )
+            )
+        return documents
 
     def search_raw(self, user_id: str, query: str, limit: int) -> list[MemoryRecord]:
         if limit <= 0:

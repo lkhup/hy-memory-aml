@@ -8,7 +8,7 @@ Replace every placeholder and freeze the repository commit before submitting.
 - Version: `0.1.0`
 - Division: `Open-source Methods`
 - Track: `Textual Memory`
-- Repository: `<public repository URL>`
+- Repository: `https://github.com/lkhup/hy-memory-aml`
 - Fixed commit: `<git commit SHA>`
 - Add endpoint: `https://<domain>/add`
 - Search endpoint: `https://<domain>/search`
@@ -19,7 +19,7 @@ Replace every placeholder and freeze the repository commit before submitting.
 
 The system adapts Tencent Hunyuan's Apache-2.0-licensed Hy-Memory 2.0.3 framework to
 the AML Cycle 2 Add/Search contract. It uses Hy-Memory's `pro` chat-memory pipeline,
-Qdrant vector storage, hybrid retrieval, and a durable verbatim-evidence fallback.
+Chroma vector storage, hybrid retrieval, and a durable verbatim-evidence fallback.
 The Add-stage LLM is `gpt-4o-mini`, in accordance with the Open-source Methods rule.
 
 Adapter changes authored for this submission:
@@ -30,7 +30,9 @@ Adapter changes authored for this submission:
 - Strict `user_id` retrieval isolation.
 - Hy-Memory channel flattening, deduplication, and rank preservation.
 - Durable source-message evidence fallback.
-- Docker Compose deployment with private Qdrant and public TLS termination.
+- Bounded concurrency with per-user write serialization.
+- A Hy-Memory 2.0.3 shared-client compatibility fix for concurrent LLM calls.
+- Direct Uvicorn deployment with persistent Chroma and SQLite storage.
 
 ## Attribution
 
@@ -46,12 +48,12 @@ evaluation datasets.
 ## Operations declaration
 
 - API version: `0.1.0`
-- Add concurrency: `<declared value>`
-- Search concurrency: `<declared value>`
+- Add concurrency: `16`
+- Search concurrency: `16`
 - Add timeout: `30 minutes at the edge`
 - Search timeout: `<measured p99 and configured value>`
 - Rate limits: `<state any infrastructure rate limits>`
-- Storage: persistent Qdrant and adapter volumes
+- Storage: persistent Chroma, Hy-Memory, and adapter SQLite directories
 - Backups: `<describe snapshots/backups>`
 - Deployment region: `<region>`
 - Operator contact: `<email>`

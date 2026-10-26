@@ -28,6 +28,18 @@ class Settings(BaseSettings):
     include_options_in_query: bool = False
     docs_enabled: bool = True
     log_level: str = "INFO"
+    fast_memory_enabled: bool = False
+    # Read previously indexed evidence after restoring synchronous Hy-Memory.
+    # This does not skip LLM extraction on any new write.
+    fast_memory_read_fallback: bool = False
+    fast_memory_collection_name: str = "aml_raw_fast_v1"
+    fast_memory_persist_dir: Path = Path("./data/fast-chroma")
+    fast_memory_max_document_chars: int = Field(default=16_000, ge=1_000, le=100_000)
+    fast_memory_backfill_hours: float = Field(default=0.0, ge=0.0, le=168.0)
+    memory_embedder_model: str = "text-embedding-v4"
+    memory_embedder_api_key: str = ""
+    memory_embedder_base_url: str = "https://api.openai.com/v1"
+    memory_embedding_dims: int = Field(default=1024, ge=1, le=8192)
 
     @field_validator("api_token")
     @classmethod
