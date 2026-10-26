@@ -22,7 +22,10 @@ def main():
         for k, v in values.items()
         if k.startswith(("MEMORY_LLM_", "MEMORY_EMBEDDER_", "MEMORY_EMBEDDING_"))
     }
-    (root / "logs").mkdir(exist_ok=True)
+    (root / "logs").mkdir(exist_ok=True, mode=0o700)
+    os.chmod(root / "logs", 0o700)
+    (root / "data").mkdir(exist_ok=True, mode=0o700)
+    os.chmod(root / "data", 0o700)
     runtime = root / "data" / "runtime"
     runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(runtime, 0o700)
