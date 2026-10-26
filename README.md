@@ -6,6 +6,11 @@ Agent Memory Leaderboard (AML) Cycle 2 Textual Memory `Add` and `Search` contrac
 The service is intentionally limited to memory ingestion and evidence retrieval.
 It never generates the benchmark's final answer.
 
+The new `multitrack/` runtime adds Coding and Multimodal interfaces behind one
+public port while retaining the frozen text backend. See [MULTITRACK.md](MULTITRACK.md)
+for endpoint paths, isolation, concurrency budgets, and deployment details. The
+text-only implementation in `app/` remains unchanged from commit `b78edcc`.
+
 ## Architecture
 
 ```text
