@@ -6,11 +6,13 @@ The new runtime uses the frozen text adapter as the unchanged legacy backend.
 | Public path | Backend | Storage |
 | --- | --- | --- |
 | `/add`, `/search`, `/health` (also `/textual/...`) | Legacy text, loopback 18790 | Existing text data and settings |
-| `/coding/add`, `/coding/search`, `/coding/health` | New API, loopback 18788 | `data/coding` |
-| `/multimodal/add`, `/multimodal/search`, `/multimodal/health` | New API, loopback 18789 | `data/multimodal` |
+| `/coding/add`, `/coding/search`, `/coding/health` | New API, private `data/runtime/coding.sock` | `data/coding` |
+| `/multimodal/add`, `/multimodal/search`, `/multimodal/health` | New API, private `data/runtime/multimodal.sock` | `data/multimodal` |
 
-Internal ports are not additional public submission ports. Each new backend runs
-one worker and uses a dedicated server-only authentication secret. The gateway
+The new backends use Unix domain sockets on Linux, leaving TCP ports 18788 and
+18789 free. Their sockets live in the service owner's private runtime directory.
+Each new backend runs one worker and uses the original text service's API_TOKEN,
+kept only on the server. The gateway
 forwards authentication unchanged; it never repeats a POST automatically.
 
 The legacy `app/` package is retained verbatim from commit b78edcc. Its algorithms,
@@ -88,6 +90,13 @@ inspect their paths before use on another host.
 or gateway after process exit, with a 30-second restart backoff. It runs as the
 service owner and survives SSH disconnects. This is process crash recovery;
 automatic startup after a whole-server reboot requires host startup integration.
+
+`scripts/migrate_track_sockets.py` is the idle-service migration tool for an
+existing TCP deployment. It requires a private backup of overwritten sources,
+drains the gateway and new backends, starts the two Unix sockets, verifies all
+three public health routes and unchanged journals, and restores crash recovery.
+On failure it restores the prior sources and process commands. The frozen text
+process remains running; the public gateway has a brief restart during cutover.
 
 Use each track's official Smoke before starting its Full. Synthetic load results
 measure a particular provider and message size; they do not establish Full-run

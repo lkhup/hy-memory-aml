@@ -8,6 +8,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
+from multitrack.endpoints import gateway_sockets
+
 TARGETS = {
     "textual": os.getenv("TEXTUAL_BACKEND_URL", "http://127.0.0.1:18790"),
     "coding": os.getenv("CODING_BACKEND_URL", "http://127.0.0.1:18788"),
@@ -26,7 +28,9 @@ HOP = {
 }
 
 
-def create_gateway(targets=None, transport=None):
+def create_gateway(targets=None, transport=None, sockets=None):
+    # Explicit targets are also used for standalone TCP deployments and tests.
+    sockets = sockets if sockets is not None else (gateway_sockets() if targets is None else {})
     targets = targets or TARGETS
 
     @asynccontextmanager
@@ -37,10 +41,23 @@ def create_gateway(targets=None, transport=None):
             transport=transport,
             trust_env=False,
         )
+        app.state.clients = dict.fromkeys(targets, app.state.client)
         try:
+            for track, path in sockets.items():
+                app.state.clients[track] = httpx.AsyncClient(
+                    transport=httpx.AsyncHTTPTransport(
+                        uds=path,
+                        limits=httpx.Limits(max_connections=512, max_keepalive_connections=128),
+                        retries=0,
+                        trust_env=False,
+                    ),
+                    timeout=httpx.Timeout(1860, connect=5, pool=5),
+                    trust_env=False,
+                )
             yield
         finally:
-            await app.state.client.aclose()
+            for client in {app.state.client, *app.state.clients.values()}:
+                await client.aclose()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -59,14 +76,15 @@ def create_gateway(targets=None, transport=None):
         headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP}
         # Preserve bytes, auth, status and response headers. Never retry POST here:
         # only the backend journal can determine whether a write has committed.
-        forwarded = app.state.client.build_request(
+        client = app.state.clients[track]
+        forwarded = client.build_request(
             request.method,
             targets[track] + "/" + remainder,
             headers=headers,
             content=request.stream(),
         )
         try:
-            response = await app.state.client.send(forwarded, stream=True)
+            response = await client.send(forwarded, stream=True)
         except httpx.TimeoutException as exc:
             raise HTTPException(504, "Backend request timed out") from exc
         except httpx.TransportError as exc:

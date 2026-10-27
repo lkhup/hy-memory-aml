@@ -3,11 +3,14 @@
 import json
 import os
 import signal
+import socket
 import subprocess
 import time
 from pathlib import Path
 
 from dotenv import dotenv_values
+
+from multitrack.endpoints import backend_socket
 
 ROOT = Path(__file__).resolve().parents[1]
 LEGACY = Path.home() / "hy-memory-aml"
@@ -63,6 +66,31 @@ def environment(name):
     return env
 
 
+def services():
+    return {
+        "coding": ("multitrack.api:app", str(backend_socket("coding")), ROOT, None),
+        "multimodal": ("multitrack.api:app", str(backend_socket("multimodal")), ROOT, None),
+        "legacy-text": ("app.main:app", 18790, LEGACY, "127.0.0.1"),
+        "gateway": ("multitrack.gateway:app", 18793, ROOT, "0.0.0.0"),
+    }
+
+
+def listener_args(binding, host=None):
+    if isinstance(binding, int):
+        return ["--host", host, "--port", str(binding)]
+    return ["--uds", str(binding)]
+
+
+def socket_in_use(path):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+        probe.settimeout(1)
+        try:
+            probe.connect(str(path))
+        except (FileNotFoundError, ConnectionRefusedError):
+            return False
+        return True
+
+
 def main():
     # flock prevents multiple supervisors from racing to restart a process.
     import fcntl
@@ -78,21 +106,19 @@ def main():
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    services = {
-        "coding": ("multitrack.api:app", 18788, ROOT, "127.0.0.1"),
-        "multimodal": ("multitrack.api:app", 18789, ROOT, "127.0.0.1"),
-        "legacy-text": ("app.main:app", 18790, LEGACY, "127.0.0.1"),
-        "gateway": ("multitrack.gateway:app", 18793, ROOT, "0.0.0.0"),
-    }
+    configured = services()
     children = {}
     last_start = {}
     while running:
-        for name, (module, port, cwd, host) in services.items():
+        for name, (module, port, cwd, host) in configured.items():
             if name in children:
                 children[name].poll()  # Reap exited children before checking /proc.
             path = RUNTIME / (name + ".pid")
             pid = int(path.read_text()) if path.exists() else 0
             if matches(pid, module, port, cwd):
+                continue
+            if isinstance(port, str) and socket_in_use(port):
+                # A live socket with an unrecognized owner must not be replaced.
                 continue
             # Do not terminate an unrelated process holding a configured port.
             if time.monotonic() - last_start.get(name, 0) < 30:
@@ -105,10 +131,7 @@ def main():
                         "-m",
                         "uvicorn",
                         module,
-                        "--host",
-                        host,
-                        "--port",
-                        str(port),
+                        *listener_args(port, host),
                         "--workers",
                         "1",
                     ],

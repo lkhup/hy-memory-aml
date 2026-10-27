@@ -3,13 +3,15 @@
 import json
 import os
 import secrets
-import socket
 import subprocess
 import time
 from pathlib import Path
 
 import httpx
 from dotenv import dotenv_values
+
+from multitrack.endpoints import backend_socket
+from scripts.supervise_tracks import socket_in_use
 
 
 def main():
@@ -36,9 +38,10 @@ def main():
     token = token_path.read_text().strip()
     py = str(original / ".venv-deploy/bin/python")
     report = {}
-    for track, port in (("coding", 18788), ("multimodal", 18789)):
-        with socket.socket() as sock:
-            sock.bind(("127.0.0.1", port))
+    for track in ("coding", "multimodal"):
+        sockpath = backend_socket(track)
+        if socket_in_use(sockpath):
+            raise RuntimeError(track + " socket is already serving requests")
         env = dict(os.environ)
         env.update(allowed)
         env.update(
@@ -66,10 +69,8 @@ def main():
                     "-m",
                     "uvicorn",
                     "multitrack.api:app",
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    str(port),
+                    "--uds",
+                    str(sockpath),
                     "--workers",
                     "1",
                     "--log-level",
@@ -87,7 +88,8 @@ def main():
             if child.poll() is not None:
                 raise RuntimeError(track + " backend exited; inspect local private logs")
             try:
-                response = httpx.get(f"http://127.0.0.1:{port}/health", timeout=2)
+                with httpx.Client(transport=httpx.HTTPTransport(uds=str(sockpath))) as client:
+                    response = client.get("http://backend/health", timeout=2)
                 if response.status_code == 200:
                     report[track] = {"pid": child.pid, "health": response.json()}
                     break

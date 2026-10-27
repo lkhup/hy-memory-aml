@@ -19,6 +19,8 @@ from pathlib import Path
 import httpx
 from dotenv import dotenv_values
 
+from multitrack.endpoints import backend_socket
+
 LEGACY = Path.home() / "hy-memory-aml"
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = LEGACY / ".venv-deploy/bin/python"
@@ -43,6 +45,15 @@ def live(pid):
     try:
         return path.read_text().split()[2] != "Z"
     except FileNotFoundError:
+        return False
+
+
+def track_health(track):
+    try:
+        with httpx.Client(transport=httpx.HTTPTransport(uds=str(backend_socket(track)))) as client:
+            response = client.get("http://backend/health", timeout=3)
+            return response.status_code == 200 and response.json().get("memory_ready")
+    except (ValueError, httpx.TransportError):
         return False
 
 
@@ -90,7 +101,7 @@ def main():
     cmd = (proc / "cmdline").read_bytes().split(b"\0")
     if proc.joinpath("cwd").resolve() != LEGACY or b"18793" not in cmd:
         raise RuntimeError("Legacy PID/cwd/port mismatch; refusing migration")
-    if not all(health(port, 3) for port in (18788, 18789, 18793)):
+    if not health(18793, 3) or not all(track_health(t) for t in ("coding", "multimodal")):
         raise RuntimeError("A required backend is unhealthy")
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 18790))
